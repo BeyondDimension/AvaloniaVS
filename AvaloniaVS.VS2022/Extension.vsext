@@ -3,7 +3,7 @@
   "version": "1.0.0.0",
   "extensions": [
     {
-        "vsixId": "TemplateStudioForAvalonia.973b9e25-68ad-44b2-b375-9a775809cb97",
+        "vsixId": "TemplateStudioForAvalonia.973b9e25-68ad-44b2-b375-9a775809cb99",
         "name": "AvaloniaTemplateStudio"
     }
   ]
