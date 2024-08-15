@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -9,18 +9,22 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Avalonia.Ide.CompletionEngine;
 using Avalonia.Ide.CompletionEngine.AssemblyMetadata;
 using Avalonia.Ide.CompletionEngine.DnlibMetadataProvider;
 using AvaloniaVS.Models;
 using AvaloniaVS.Services;
+using AvaloniaVS.Shared.Services;
 using EnvDTE;
+using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell;
 using Microsoft.VisualStudio.Shell.Interop;
 using Microsoft.VisualStudio.Text;
 using Microsoft.VisualStudio.Text.Editor;
 using Microsoft.VisualStudio.Threading;
 using Serilog;
+using VSLangProj;
 using Task = System.Threading.Tasks.Task;
 
 namespace AvaloniaVS.Views
@@ -75,14 +79,9 @@ namespace AvaloniaVS.Views
                 typeof(AvaloniaDesigner),
                 new PropertyMetadata("100%", HandleZoomLevelChanged));
 
-        public static string FmtZoomLevel(double v) => $"{v.ToString(CultureInfo.InvariantCulture)}%";
 
-        public static string[] ZoomLevels { get; } = new string[]
-        {
-            FmtZoomLevel(800), FmtZoomLevel(400), FmtZoomLevel(200), FmtZoomLevel(150), FmtZoomLevel(100),
-            FmtZoomLevel(66.67), FmtZoomLevel(50), FmtZoomLevel(33.33), FmtZoomLevel(25), FmtZoomLevel(12.5),
-            "Fit All"
-        };
+
+        public static string[] ZoomLevels { get; } = AvaloniaVS.ZoomLevels.Levels;
 
 
         private static readonly GridLength ZeroStar = new GridLength(0, GridUnitType.Star);
@@ -100,7 +99,9 @@ namespace AvaloniaVS.Views
         private bool _disposed;
         private double _scaling = 1;
         private AvaloniaDesignerView _unPausedView;
-        private bool _buidRequired;
+        private bool _buildRequired;
+        private bool _firstFrame = true;
+        private readonly Throttle<double> _previewResizethrottle;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="AvaloniaDesigner"/> class.
@@ -110,6 +111,7 @@ namespace AvaloniaVS.Views
             InitializeComponent();
 
             _throttle = new Throttle<string>(TimeSpan.FromMilliseconds(300), UpdateXaml);
+            _previewResizethrottle = new(TimeSpan.FromMilliseconds(500), UpdateScaling);
             Process = new PreviewerProcess();
             Process.ErrorChanged += ErrorChanged;
             Process.FrameReceived += FrameReceived;
@@ -350,9 +352,9 @@ namespace AvaloniaVS.Views
                 {
                     return (output.IsNetCore || output.IsNetFramework)
                         && output.RuntimeIdentifier != "browser-wasm"
-                        && (output.TargetPlatfromIdentifier == ""
-                            || string.Equals(output.TargetPlatfromIdentifier, "windows", StringComparison.OrdinalIgnoreCase)
-                            || string.Equals(output.TargetPlatfromIdentifier, "macos", StringComparison.OrdinalIgnoreCase));
+                        && (output.TargetPlatformIdentifier == ""
+                            || string.Equals(output.TargetPlatformIdentifier, "windows", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(output.TargetPlatformIdentifier, "macos", StringComparison.OrdinalIgnoreCase));
                 }
 
                 string GetXamlAssembly(ProjectOutputInfo output)
@@ -427,25 +429,38 @@ namespace AvaloniaVS.Views
         public bool TryProcessZoomLevelValue(out double scaling)
         {
             scaling = 1;
-
-            if (string.IsNullOrEmpty(ZoomLevel))
+            var zoomLevel = ZoomLevel;
+            if (string.IsNullOrEmpty(zoomLevel))
                 return false;
 
-            if (ZoomLevel.Equals("Fit All", StringComparison.OrdinalIgnoreCase))
+            BitmapSource bitmap = default;
+
+            if (Process.IsReady)
             {
-                if (Process.IsReady && Process.Bitmap != null)
-                {
-                    double x = previewer.ActualWidth / (Process.Bitmap.Width / Process.Scaling);
-                    double y = previewer.ActualHeight / (Process.Bitmap.Height / Process.Scaling);
+                bitmap = Process.Bitmap;
+            }
 
-                    ZoomLevel = string.Format(CultureInfo.InvariantCulture, "{0}%", Math.Round(Math.Min(x, y), 2, MidpointRounding.ToEven) * 100);
-                }
-                else
-                {
-                    ZoomLevel = "100%";
-                }
+            if (bitmap is not null && zoomLevel.StartsWith("Fit All", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var processScaling = Process.Scaling;
+                var viewportSize = previewer.GetViewportSize(10);
+                double x = viewportSize.Width / (bitmap.Width / processScaling);
+                double y = viewportSize.Height / (bitmap.Height / processScaling);
 
-                return false;
+                scaling = Math.Round(Math.Min(x, y), 2, MidpointRounding.ToEven);
+
+                return true;
+            }
+            else if (bitmap is not null && zoomLevel.StartsWith("Fit to Width", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var processScaling = Process.Scaling;
+                var viewportSize = previewer.GetViewportSize(10);
+                double x = viewportSize.Width / (bitmap.Width / processScaling);
+                //double y = viewportSize.Height / (bitmap.Height / processScaling);
+
+                scaling = Math.Round(x, 2, MidpointRounding.ToEven);
+
+                return true;
             }
             else if (double.TryParse(ZoomLevel.TrimEnd('%'), NumberStyles.Number, CultureInfo.InvariantCulture, out double zoomPercent)
                      && zoomPercent > 0 && zoomPercent <= 1000)
@@ -470,7 +485,7 @@ namespace AvaloniaVS.Views
 
             if (assemblyPath != null && executablePath != null && hostAppPath != null && isNetFx != null)
             {
-                RebuildMetadata(assemblyPath);
+                RebuildMetadata(assemblyPath, executablePath);
 
                 try
                 {
@@ -490,7 +505,7 @@ namespace AvaloniaVS.Views
                 }
                 catch (FileNotFoundException ex)
                 {
-                    _buidRequired = true;
+                    _buildRequired = true;
                     ShowError("Build Required", ex.Message);
                     Log.Logger.Debug(ex, "StartAsync could not find executable");
                 }
@@ -503,7 +518,7 @@ namespace AvaloniaVS.Views
                 {
                     _startingProcess.Release();
                 }
-                _buidRequired = false;
+                _buildRequired = false;
             }
             else
             {
@@ -519,7 +534,7 @@ namespace AvaloniaVS.Views
             Log.Logger.Verbose("Finished AvaloniaDesigner.StartProcessAsync()");
         }
 
-        private string GetIntermediateOutputPath(IVsBuildPropertyStorage storage)
+        private string GetReferencesFilePath(IVsBuildPropertyStorage storage)
         {
             // .NET 8 SDK Artifacts output layout
             // https://learn.microsoft.com/en-us/dotnet/core/sdk/artifacts-output
@@ -539,30 +554,47 @@ namespace AvaloniaVS.Views
             }
         }
 
-        private void RebuildMetadata(string assemblyPath)
+        private void RebuildMetadata(string assemblyPath, string executablePath)
         {
+            
             assemblyPath ??= SelectedTarget?.XamlAssembly;
+            var project = SelectedTarget?.Project;
 
-            if (assemblyPath != null && SelectedTarget?.Project != null)
+            if (assemblyPath != null && project != null)
             {
                 var buffer = _editor.TextView.TextBuffer;
                 var metadata = buffer.Properties.GetOrCreateSingletonProperty(
                     typeof(XamlBufferMetadata),
                     () => new XamlBufferMetadata());
                 buffer.Properties["AssemblyName"] = Path.GetFileNameWithoutExtension(assemblyPath);
-                var storage = GetMSBuildPropertyStorage(SelectedTarget.Project);
-                string intermediateOutputPath = GetIntermediateOutputPath(storage);
+
                 if (metadata.CompletionMetadata == null || metadata.NeedInvalidation)
                 {
-                    CreateCompletionMetadataAsync(intermediateOutputPath, metadata).FireAndForget();
+                    Func<IAssemblyProvider> assemblyProviderFunc = () =>
+                    {
+                        if (VsProjectAssembliesProvider.TryCreate(project, assemblyPath) is { } vsProjectAsmProvider)
+                        {
+                            return vsProjectAsmProvider;
+                        }
+                        else if (GetReferencesFilePath(GetMSBuildPropertyStorage(project)) is { } referencesPath
+                            && File.Exists(referencesPath))
+                        {
+                            return new ReferenceFileAssemblyProvider(referencesPath, assemblyPath);
+                        }
+                        return new DepsJsonFileAssemblyProvider(executablePath, assemblyPath);
+                    };
+
+                    CreateCompletionMetadataAsync(executablePath, assemblyProviderFunc, metadata).FireAndForget();
                 }
             }
         }
 
         private static Dictionary<string, Task<Metadata>> _metadataCache;
+        private static readonly MetadataReader _metadataReader = new(new DnlibMetadataProvider());
 
         private static async Task CreateCompletionMetadataAsync(
-            string intermediateOutputPath,
+            string executablePath,
+            Func<IAssemblyProvider> assemblyProviderFunc,
             XamlBufferMetadata target)
         {
             await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
@@ -575,7 +607,7 @@ namespace AvaloniaVS.Views
                 dte.Events.BuildEvents.OnBuildBegin += (s, e) => _metadataCache.Clear();
             }
 
-            Log.Logger.Information("Started AvaloniaDesigner.CreateCompletionMetadataAsync() for {ExecutablePath}", intermediateOutputPath);
+            Log.Logger.Information("Started AvaloniaDesigner.CreateCompletionMetadataAsync() for {ExecutablePath}", executablePath);
 
             try
             {
@@ -583,14 +615,11 @@ namespace AvaloniaVS.Views
 
                 Task<Metadata> metadataLoad;
 
-                if (!_metadataCache.TryGetValue(intermediateOutputPath, out metadataLoad))
+                if (!_metadataCache.TryGetValue(executablePath, out metadataLoad))
                 {
-                    metadataLoad = Task.Run(() =>
-                                    {
-                                        var metadataReader = new MetadataReader(new DnlibMetadataProvider());
-                                        return metadataReader.GetForTargetAssembly(new AvaloniaCompilationAssemblyProvider(intermediateOutputPath));
-                                    });
-                    _metadataCache[intermediateOutputPath] = metadataLoad;
+                    var assemblyProvider = assemblyProviderFunc();
+                    metadataLoad = Task.Run(() => _metadataReader.GetForTargetAssembly(assemblyProvider));
+                    _metadataCache[executablePath] = metadataLoad;
                 }
 
                 target.CompletionMetadata = await metadataLoad;
@@ -599,7 +628,7 @@ namespace AvaloniaVS.Views
 
                 sw.Stop();
 
-                Log.Logger.Verbose("Finished AvaloniaDesigner.CreateCompletionMetadataAsync() took {Time} for {ExecutablePath}", sw.Elapsed, intermediateOutputPath);
+                Log.Logger.Verbose("Finished AvaloniaDesigner.CreateCompletionMetadataAsync() took {Time} for {ExecutablePath}", sw.Elapsed, executablePath);
             }
             catch (Exception ex)
             {
@@ -631,14 +660,22 @@ namespace AvaloniaVS.Views
         {
             if (Process.Bitmap != null && Process.Error == null)
             {
+                if (_firstFrame)
+                {
+                    _firstFrame = false;
+                    if (TryProcessZoomLevelValue(out var scaling))
+                    {
+                        UpdateScaling(scaling);
+                    }
+                }
                 await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-
                 ShowPreview();
             }
         }
 
         private async void ProcessExited(object sender, EventArgs e)
         {
+            _firstFrame = true;
             if (!IsPaused)
             {
                 await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
@@ -654,7 +691,7 @@ namespace AvaloniaVS.Views
             errorIndicator.Visibility = Visibility.Visible;
             errorHeading.Text = heading;
             errorMessage.Text = message;
-            if (_buidRequired == true)
+            if (_buildRequired == true)
             {
                 previewer.buildButton.Visibility = Visibility.Visible;
             }
@@ -885,6 +922,14 @@ namespace AvaloniaVS.Views
             }
 
             return value;
+        }
+
+        private void Preview_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            if (TryProcessZoomLevelValue(out double scaling))
+            {
+                _previewResizethrottle.Queue(scaling);
+            }
         }
     }
 }

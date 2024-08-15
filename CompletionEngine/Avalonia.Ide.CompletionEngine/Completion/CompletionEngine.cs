@@ -1,4 +1,4 @@
-﻿#nullable enable
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -10,7 +10,7 @@ namespace Avalonia.Ide.CompletionEngine;
 
 public class CompletionEngine
 {
-    private record struct ElementCompletationInfo(string DisplayText, string InsertText, string? Suffix, int? RecommendedCursorOffset, bool TriggerCompletionAfterInsert);
+    private record struct ElementCompletionInfo(string DisplayText, string InsertText, string? Suffix, int? RecommendedCursorOffset, bool TriggerCompletionAfterInsert);
 
     public class MetadataHelper
     {
@@ -284,7 +284,7 @@ public class CompletionEngine
                     .Where(kvp => !kvp.Value.IsAbstract)
                     .Select(kvp =>
                         {
-                            var ci = GetElementCompletationInfo(kvp.Key, kvp.Value);
+                            var ci = GetElementCompletionInfo(kvp.Key, kvp.Value);
                             return new Completion(ci.DisplayText, ci.InsertText, CompletionKind.Class)
                             {
                                 RecommendedCursorOffset = ci.RecommendedCursorOffset,
@@ -382,7 +382,14 @@ public class CompletionEngine
             }
             else if (type != null && type.Events.FirstOrDefault(x => x.Name == state.AttributeName) != null)
             {
-                completions.Add(new Completion("<New Event Handler>", $"{state.TagName}_{state.AttributeName}", CompletionKind.StaticProperty));
+                var name = state.TagName!;
+                // Clean up xmlns
+                var index = name.IndexOf(':');
+                if (index > -1)
+                {
+                    name = name.Substring(index + 1, name.Length - index - 1);
+                }
+                completions.Add(new Completion("<New Event Handler>", $"{name}_{state.AttributeName}", CompletionKind.StaticProperty));
             }
             else
             {
@@ -398,7 +405,7 @@ public class CompletionEngine
                         if (state.AttributeName!.Equals("Selector"))
                         {
                             hintCompletions = false;
-                            if (ProcesssSelector(search.AsSpan(), state, completions, currentAssemblyName, fullText) is int delta)
+                            if (ProcessSelector(search.AsSpan(), state, completions, currentAssemblyName, fullText) is int delta)
                             {
                                 curStart = curStart + delta;
                             }
@@ -561,11 +568,11 @@ public class CompletionEngine
         };
     }
 
-    static ElementCompletationInfo GetElementCompletationInfo(string key,
+    static ElementCompletionInfo GetElementCompletionInfo(string key,
         MetadataType? type)
     {
         var xamlName = key;
-        var insretText = xamlName;
+        var insertText = xamlName;
         var recommendedCursorOffset = default(int?);
         var triggerCompletionAfterInsert = false;
         if (type is not null)
@@ -577,22 +584,22 @@ public class CompletionEngine
                     xamlName = xamlName.Substring(0, key.Length - 9 /* length of "extension" */);
                 }
             }
-            insretText = xamlName;
+            insertText = xamlName;
             if (type.IsGeneric)
             {
-                var targsStart = xamlName.IndexOf('`');
-                if (targsStart > -1)
+                var tArgsStart = xamlName.IndexOf('`');
+                if (tArgsStart > -1)
                 {
                     var xamlNameBuilder = new System.Text.StringBuilder();
                     var insertTextBuilder = new System.Text.StringBuilder();
-                    xamlNameBuilder.Append(xamlName, 0, targsStart);
-                    insertTextBuilder.Append(xamlName, 0, targsStart);
-                    var args = xamlName.Substring(targsStart + 1);
+                    xamlNameBuilder.Append(xamlName, 0, tArgsStart);
+                    insertTextBuilder.Append(xamlName, 0, tArgsStart);
+                    var args = xamlName.Substring(tArgsStart + 1);
                     if (int.TryParse(args
                         , System.Globalization.NumberStyles.Number
-                        , System.Globalization.CultureInfo.InvariantCulture, out var nargs))
+                        , System.Globalization.CultureInfo.InvariantCulture, out var nArgs))
                     {
-                        if (nargs == 1)
+                        if (nArgs == 1)
                         {
                             xamlNameBuilder.Append("<T>");
                             insertTextBuilder.Append(" x:TypeArguments=\"\"");
@@ -603,7 +610,7 @@ public class CompletionEngine
                             xamlNameBuilder.Append('<');
                             insertTextBuilder.Append(" x:TypeArguments=\"");
                             recommendedCursorOffset = insertTextBuilder.Length - 1;
-                            for (int i = 0; i < nargs; i++)
+                            for (int i = 0; i < nArgs; i++)
                             {
                                 xamlNameBuilder.Append('T');
                                 xamlNameBuilder.Append(i + 1);
@@ -614,13 +621,13 @@ public class CompletionEngine
                             insertTextBuilder[insertTextBuilder.Length - 1] = '"';
                         }
                         xamlName = xamlNameBuilder.ToString();
-                        insretText = insertTextBuilder.ToString();
+                        insertText = insertTextBuilder.ToString();
                         triggerCompletionAfterInsert = true;
                     }
                 }
             }
         }
-        return new (xamlName, insretText, default, recommendedCursorOffset, triggerCompletionAfterInsert);
+        return new(xamlName, insertText, default, recommendedCursorOffset, triggerCompletionAfterInsert);
     }
 
     private void ProcessStyleSetter(string setterPropertyName, XmlParser state, List<Completion> completions, string? currentAssemblyName)
@@ -639,10 +646,19 @@ public class CompletionEngine
         }
         else
         {
-            var selector = state.FindParentAttributeValue("Selector", 1, maxLevels: 0);
-            var matches = Regex.Matches(selector ?? "", selectorTypes);
-            var types = matches.OfType<Match>().Select(m => m.Groups["type"].Value).Where(v => !string.IsNullOrEmpty(v));
-            selectorTypeName = types.LastOrDefault()?.Replace('|', ':') ?? "Control";
+            if (state.FindParentAttributeValue("Selector", 1, maxLevels: 0)?.Trim() is { Length: > 0 } selector)
+            {
+                if (selector[0] == '^')
+                {
+                    selectorTypeName = state.FindParentAttributeValue("TargetType", 2, maxLevels: 0);
+                }
+                else
+                {
+                    var matches = Regex.Matches(selector, selectorTypes);
+                    var types = matches.OfType<Match>().Select(m => m.Groups["type"].Value).Where(v => !string.IsNullOrEmpty(v));
+                    selectorTypeName = types.LastOrDefault()?.Replace('|', ':') ?? "Control";
+                }
+            }
         }
 
         if (string.IsNullOrEmpty(selectorTypeName))
@@ -736,7 +752,7 @@ public class CompletionEngine
             {
                 foreach (var propertyName in MetadataHelper.FilterPropertyNames(filterType, filter, false, false))
                 {
-                    yield return new Completion(propertyName, fmtInsertText?.Invoke(propertyName) ?? propertyName, propertyName, CompletionKind.DataProperty);
+                    yield return new Completion(propertyName, fmtInsertText?.Invoke(propertyName) ?? propertyName, propertyName, CompletionKind.DataProperty, Priority: 254);
                 }
             }
         }
@@ -815,7 +831,7 @@ public class CompletionEngine
         {
             if (i <= 1 && values[i] == "DataContext")
             {
-                //assume parent.datacontext is x:datatype so we have some intelisence
+                //assume parent.datacontext is x:datatype so we have some intellisense
                 type = state.FindParentAttributeValue("(x\\:)?DataType");
                 mdType = type is not null ? Helper.LookupType(type) : null;
             }
@@ -1009,21 +1025,20 @@ public class CompletionEngine
     public static CompletionKind GetCompletionKindForHintValues(MetadataType type)
         => type.IsEnum ? CompletionKind.Enum : CompletionKind.StaticProperty;
 
-
-    public int? ProcesssSelector(ReadOnlySpan<char> text, XmlParser state, List<Completion> completions, string? currentAssemblyName, string? fullText)
+    public int? ProcessSelector(ReadOnlySpan<char> text, XmlParser state, List<Completion> completions, string? currentAssemblyName, string? fullText)
     {
-        int? parsered = default;
+        int? parsed = default;
         var parser = SelectorParser.Parse(text);
-        var previusStatment = parser.PreviousStatement;
+        var previousStatement = parser.PreviousStatement;
         switch (parser.Statement)
         {
             case SelectorStatement.Colon:
             case SelectorStatement.FunctionArgs:
                 {
                     var fn = parser.FunctionName;
-                    var tn = parser.TypeName;
+                    var tn = GetFullName(parser);
                     var isEmptyTn = string.IsNullOrEmpty(tn);
-                    if (previusStatment <= SelectorStatement.Middle && isEmptyTn)
+                    if (previousStatement <= SelectorStatement.Middle && isEmptyTn)
                     {
                         completions.Add(new Completion(":is()", ":is(", CompletionKind.Selector | CompletionKind.Enum));
                     }
@@ -1044,8 +1059,7 @@ public class CompletionEngine
                     }
                     else
                     {
-                        var typeFullName = GetFullName(parser);
-                        if (Helper.LookupType(typeFullName) is MetadataType { HasPseudoClasses: true } type)
+                        if (Helper.LookupType(tn) is MetadataType { HasPseudoClasses: true } type)
                         {
                             completions.AddRange(type.PseudoClasses.Select(v => new Completion(v, CompletionKind.Selector | CompletionKind.Enum)));
                         }
@@ -1057,7 +1071,7 @@ public class CompletionEngine
                                .Select(t => t.Value);
                         if (types?.Any() == true)
                         {
-                            parsered = text.Length - (parser.LastParsedPosition + 1);
+                            parsed = text.Length - (parser.LastParsedPosition + 1);
                             completions.AddRange(types.Select(v =>
                             {
                                 var name = GetXmlnsFullName(v);
@@ -1067,7 +1081,7 @@ public class CompletionEngine
                     }
                     if (completions.Count > 0)
                     {
-                        parsered = parser.LastParsedPosition ?? 0;
+                        parsed = parser.LastParsedPosition ?? 0;
                     }
                 }
                 break;
@@ -1076,6 +1090,10 @@ public class CompletionEngine
                     if (parser.IsTemplate)
                     {
                         var ton = parser.TemplateOwner;
+                        if (string.IsNullOrEmpty(ton))
+                        {
+                            ton = GetTypeFromControlTheme();
+                        }
                         if (!string.IsNullOrEmpty(ton))
                         {
                             //If it hat TemplateOwner 
@@ -1094,11 +1112,12 @@ public class CompletionEngine
                                 if (partType is not null)
                                 {
                                     parts = parts
-                                        .Where(p => p.Type.AssemblyQualifiedName == partType.AssemblyQualifiedName);
+                                        .Where(p => p.Type.AssemblyQualifiedName == partType.AssemblyQualifiedName)
+                                        .ToList();
                                 }
                                 if (parts.Any())
                                 {
-                                    parsered = parser.LastParsedPosition ?? 0;
+                                    parsed = parser.LastParsedPosition ?? 0;
                                     var x = (parser.LastParsedPosition ?? 0) - parser.LastSegmentStartPosition - 1;
                                     if (string.IsNullOrEmpty(fullName) == false)
                                     {
@@ -1131,13 +1150,12 @@ public class CompletionEngine
                             {
                                 if (m.Success)
                                 {
-                                    parsered = (parser.LastParsedPosition ?? 0);
+                                    parsed = (parser.LastParsedPosition ?? 0);
                                     var name = m.Groups["AttribValue"].Value;
                                     completions.Add(new Completion(name, CompletionKind.Name | CompletionKind.Class));
                                 }
                             }
                         }
-
                     }
                 }
                 break;
@@ -1163,7 +1181,7 @@ public class CompletionEngine
                                         .Where(t => t.IsMarkupExtension == false)
                                         .Where(t => t.IsAvaloniaObjectType || t.HasAttachedProperties);
                                     completions.AddRange(ft.Select(v => new Completion(v.Name, $"{ns}|{v.Name}", CompletionKind.Class | CompletionKind.TargetTypeClass)));
-                                    parsered = (parser.LastParsedPosition ?? 0) - (tn?.Length ?? 0);
+                                    parsed = (parser.LastParsedPosition ?? 0) - (tn?.Length ?? 0);
                                 }
                             }
                             else if (Helper.FilterTypes(typeFullName).Select(kvp => kvp.Value) is { } types)
@@ -1177,7 +1195,7 @@ public class CompletionEngine
                                     var name = GetXmlnsFullName(v);
                                     return new Completion(name, CompletionKind.Class | CompletionKind.TargetTypeClass);
                                 }));
-                                parsered = (parser.LastParsedPosition ?? 0) - (tn?.Length ?? 0);
+                                parsed = (parser.LastParsedPosition ?? 0) - (tn?.Length ?? 0);
                             }
                         }
                     }
@@ -1196,7 +1214,7 @@ public class CompletionEngine
                             );
                         if (selectorElementProperties?.Any() == true)
                         {
-                            parsered = (parser.LastParsedPosition ?? 0) - (propertyName?.Length ?? 0);
+                            parsed = (parser.LastParsedPosition ?? 0) - (propertyName?.Length ?? 0);
                             completions.AddRange(selectorElementProperties.Select(v => new Completion(v.Name, v.Name + "=", v.IsAttached ? CompletionKind.AttachedProperty : CompletionKind.Property)));
                         }
                     }
@@ -1219,7 +1237,7 @@ public class CompletionEngine
                             var lenType = lenPropertyName == 0 || typeFullName is null
                                 ? 0
                                 : typeFullName.Length + 1;
-                            parsered = (parser.LastParsedPosition ?? 0) - lenType - lenType + 1;
+                            parsed = (parser.LastParsedPosition ?? 0) - lenType - lenType + 1;
                             completions.AddRange(selectorElementProperties.Select(v => new Completion(v.Name, v.Name + ")", v.IsAttached ? CompletionKind.AttachedProperty : CompletionKind.Property)));
                         }
                     }
@@ -1230,7 +1248,7 @@ public class CompletionEngine
                              .Select(t => t.Value);
                         if (types?.Any() == true)
                         {
-                            parsered = (parser.LastParsedPosition ?? 0) + 1;
+                            parsed = (parser.LastParsedPosition ?? 0) + 1;
                             completions.AddRange(types.Select(v =>
                             {
                                 var name = GetXmlnsFullName(v);
@@ -1243,7 +1261,7 @@ public class CompletionEngine
             case SelectorStatement.Template:
                 {
                     completions.Add(new("/template/", "/template/", CompletionKind.Selector | CompletionKind.Enum));
-                    parsered = parser.LastParsedPosition;
+                    parsed = parser.LastParsedPosition;
                 }
                 break;
             case SelectorStatement.Traversal:
@@ -1251,22 +1269,26 @@ public class CompletionEngine
                 {
                     if (!parser.IsError)
                     {
-                        parsered = (parser.LastParsedPosition ?? 0);
+                        parsed = (parser.LastParsedPosition ?? 0);
+                        var parent = state.GetParentTagName(1);
                         // TODO: Crowling Selector operator from Attribute of the Selector
                         completions.Add(new Completion("^", CompletionKind.Selector | CompletionKind.Enum));
-                        completions.Add(new Completion(":", CompletionKind.Selector | CompletionKind.Enum));
-                        completions.Add(new Completion(">", CompletionKind.Selector | CompletionKind.Enum));
-                        completions.Add(new Completion(".", CompletionKind.Selector | CompletionKind.Enum));
-                        completions.Add(new Completion("#", CompletionKind.Selector | CompletionKind.Enum));
-                        completions.Add(new Completion(":is()", ":is(", CompletionKind.Selector | CompletionKind.Enum));
-                        completions.Add(new Completion(":not()", ":not(", CompletionKind.Selector | CompletionKind.Enum));
-                        completions.Add(new Completion(":nth-child()", ":nth-child(", CompletionKind.Selector | CompletionKind.Enum));
-                        completions.Add(new Completion(":nth-last-child()", ":nth-last-child(", CompletionKind.Selector | CompletionKind.Enum));
-                        completions.Add(new Completion("/template/", "/template/", CompletionKind.Selector | CompletionKind.Enum));
-                        var types = Helper.FilterTypes(default)
-                            .Where(t => t.Value.IsAvaloniaObjectType || t.Value.HasAttachedProperties)
-                            .Select(t => new Completion(t.Value.Name.Replace(":", "|"), CompletionKind.Class | CompletionKind.TargetTypeClass));
-                        completions.AddRange(types);
+                        if (!string.Equals(parent, "ControlTheme", StringComparison.OrdinalIgnoreCase))
+                        {
+                            completions.Add(new Completion(":", CompletionKind.Selector | CompletionKind.Enum));
+                            completions.Add(new Completion(">", CompletionKind.Selector | CompletionKind.Enum));
+                            completions.Add(new Completion(".", CompletionKind.Selector | CompletionKind.Enum));
+                            completions.Add(new Completion("#", CompletionKind.Selector | CompletionKind.Enum));
+                            completions.Add(new Completion(":is()", ":is(", CompletionKind.Selector | CompletionKind.Enum));
+                            completions.Add(new Completion(":not()", ":not(", CompletionKind.Selector | CompletionKind.Enum));
+                            completions.Add(new Completion(":nth-child()", ":nth-child(", CompletionKind.Selector | CompletionKind.Enum));
+                            completions.Add(new Completion(":nth-last-child()", ":nth-last-child(", CompletionKind.Selector | CompletionKind.Enum));
+                            completions.Add(new Completion("/template/", "/template/", CompletionKind.Selector | CompletionKind.Enum));
+                            var types = Helper.FilterTypes(default)
+                                .Where(t => t.Value.IsAvaloniaObjectType || t.Value.HasAttachedProperties)
+                                .Select(t => new Completion(t.Value.Name.Replace(":", "|"), CompletionKind.Class | CompletionKind.TargetTypeClass));
+                            completions.AddRange(types);
+                        }
                     }
                 }
                 break;
@@ -1299,7 +1321,7 @@ public class CompletionEngine
                                     .Where(v => v.StartsWith(value, StringComparison.OrdinalIgnoreCase));
                             }
                             completions.AddRange(values.Select(v => new Completion(v, kind)));
-                            parsered = parser.LastParsedPosition - (parser.Value?.Length ?? 0);
+                            parsed = parser.LastParsedPosition - (parser.Value?.Length ?? 0);
                         }
                     }
                 }
@@ -1311,13 +1333,16 @@ public class CompletionEngine
             default:
                 break;
         }
-        return parsered;
+        return parsed;
 
         string GetFullName(SelectorParser parser)
         {
             var ns = parser.Namespace;
-            var typename = parser.TypeName
-                ?? GetTypeFromControlTheme();
+            var typename = parser.TypeName;
+            if (string.IsNullOrEmpty(typename))
+            {
+                typename = GetTypeFromControlTheme();
+            }
             var typeFullName = string.IsNullOrEmpty(ns)
                 ? typename
                 : $"{ns}:{typename}";
@@ -1349,5 +1374,41 @@ public class CompletionEngine
             }
             return default;
         }
+    }
+
+    string GetXmlnsFullName(MetadataType type, char namespaceSeparator = '|')
+    {
+        if (Helper.Metadata?.InverseNamespace.TryGetValue(type.FullName, out var ns) == true
+            && !string.IsNullOrEmpty(ns))
+        {
+            var alias = Helper.Aliases?.FirstOrDefault(a => Equals(a.Value, ns));
+            if (alias is not null && !string.IsNullOrEmpty(alias.Value.Key))
+            {
+                return $"{alias.Value.Key}{namespaceSeparator}{type.Name}";
+            }
+        }
+        return type.Name!;
+    }
+
+    public static readonly IEnumerable<INamespaceTrasformation> Default = new INamespaceTrasformation[]
+    {
+        new NamespaceTrasformations.ToLowerTrasformation(),
+        new NamespaceTrasformations.ReplaceDot('_'),
+    };
+
+    public static string GetXmlnsFromNamespace(string @namespace) =>
+        GetXmlnsFromNamespace(@namespace.ToCharArray(), Default);
+
+    public static string GetXmlnsFromNamespace(char[] @namespace) =>
+        GetXmlnsFromNamespace(@namespace, Default);
+
+    public static string GetXmlnsFromNamespace(char[] @namespace, IEnumerable<INamespaceTrasformation> trasformations)
+    {
+        IEnumerable<char> source = @namespace;
+        foreach (var trasformation in trasformations)
+        {
+            source = trasformation.Apply(source);
+        }
+        return string.Concat(source);
     }
 }

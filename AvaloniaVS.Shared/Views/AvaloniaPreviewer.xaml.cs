@@ -1,13 +1,16 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Avalonia.Remote.Protocol.Input;
 using AvaloniaVS.Services;
 using EnvDTE;
+using Microsoft.VisualStudio.PlatformUI;
 using Microsoft.VisualStudio.Shell;
 using Serilog;
 using AvMouseButton = Avalonia.Remote.Protocol.Input.MouseButton;
@@ -32,6 +35,8 @@ namespace AvaloniaVS.Views
 
             buildButton.Click += BuildButton_Click;
             previewScroller.ScrollChanged += PreviewScroller_ScrollChanged;
+
+            SizeChanged += (_, _) => _lastSize = default;
         }
 
         private async void BuildButton_Click(object sender, RoutedEventArgs e)
@@ -107,7 +112,7 @@ namespace AvaloniaVS.Views
                         currentZoomLevel = 8;
                     }
 
-                    designer.ZoomLevel = AvaloniaDesigner.FmtZoomLevel(currentZoomLevel * 100);
+                    designer.ZoomLevel = ZoomLevels.FmtZoomLevel(currentZoomLevel * 100);
 
                     e.Handled = true;
                 }
@@ -146,7 +151,7 @@ namespace AvaloniaVS.Views
             {
                 _lastBitmap.TryGetTarget(out bitmap);
             }
-            
+
             preview.Source = bitmap;
 
             if (bitmap is not null)
@@ -188,12 +193,22 @@ namespace AvaloniaVS.Views
 
         private void PreviewScroller_ScrollChanged(object sender, ScrollChangedEventArgs e)
         {
+            // We can't do this in Update because the Scroll info may not be updated 
+            // yet and the scrollable size may still be old
             if (_centerPreviewer)
             {
-                // We can't do this in Update because the Scroll info may not be updated 
-                // yet and the scrollable size may still be old
+                if (_lastBitmapSize is { } size && size.Width < e.ViewportWidth && size.Height < e.ViewportHeight)
+                {
+                    previewScroller.ScrollToVerticalOffset(previewScroller.ScrollableHeight / 2);
+                }
+                else
+                {
+                    var transform = preview.TransformToVisual(previewScroller);
+                    var positionInScrollViewer = transform.TransformBounds(new Rect(0, 0, preview.ActualHeight, preview.ActualHeight));
+                    var offset = positionInScrollViewer.Top + e.VerticalOffset;
+                    previewScroller.ScrollToVerticalOffset(offset);
+                }
                 previewScroller.ScrollToHorizontalOffset(previewScroller.ScrollableWidth / 2);
-                previewScroller.ScrollToVerticalOffset(previewScroller.ScrollableHeight / 2);
                 _centerPreviewer = false;
             }
         }
@@ -311,5 +326,39 @@ namespace AvaloniaVS.Views
 
             return result.ToArray();
         }
+
+        ScrollBar? _horizontalScroll;
+        ScrollBar _verticalScroll;
+        Size? _lastSize = default;
+        public Size GetViewportSize(int padding)
+        {
+            if (_lastSize is null)
+            {
+                var height = previewScroller.ActualHeight;
+                var width = previewScroller.ActualWidth;
+                if (previewScroller.ComputedHorizontalScrollBarVisibility == Visibility.Visible)
+                {
+                    if (_horizontalScroll is null)
+                    {
+                        _horizontalScroll = previewScroller.FindDescendants<ScrollBar>()
+                            .First(b => b.Orientation == Orientation.Horizontal);
+                    }
+                    height -= _horizontalScroll.Height;
+                }
+                if (previewScroller.ComputedVerticalScrollBarVisibility == Visibility.Visible)
+                {
+                    if (_verticalScroll == null)
+                    {
+                        _verticalScroll = previewScroller.FindDescendants<ScrollBar>()
+                            .First(b => b.Orientation == Orientation.Vertical);
+                    }
+                    width -= _verticalScroll.Width;
+                }
+                _lastSize = new(width - padding * 2, height - padding * 2);
+            }
+            return _lastSize.Value;
+        }
+
+
     }
 }
