@@ -52,6 +52,23 @@ namespace AvaloniaVS.Services
 
             foreach (var project in FlattenProjects(_dte.Solution))
             {
+                if (project.Name != null)
+                {
+                    if (project.Name.EndsWith(".Backend") ||
+                        project.Name.Contains("UnitTest") ||
+                        project.Name.Contains("BD.Common"))
+                    {
+                        continue;
+                    }
+                    switch (project.Name)
+                    {
+                        case "Mobius.Linux":
+                        case "Mobius.macOS":
+                        case "Mobius.Windows":
+                            continue;
+                    }
+                }
+
                 if (project.Object is VSProject vsProject)
                 {
                     var projectInfo = new ProjectInfo
@@ -249,7 +266,7 @@ namespace AvaloniaVS.Services
             IReadOnlyList<Project> references)
         {
             var result = new HashSet<Project>();
-            
+
             foreach (var reference in references)
             {
                 FlattenProjectReferences(projects, reference, result);
